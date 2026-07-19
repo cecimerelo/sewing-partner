@@ -12,28 +12,23 @@ import FormControlLabel from '@suid/material/FormControlLabel'
 import IconButton from '@suid/material/IconButton'
 import Divider from '@suid/material/Divider'
 import Alert from '@suid/material/Alert'
-import { layoutPieces, type Piece } from './layout'
+import { calculateFabricNeeded, layoutPieces, type Piece } from './layout'
 
 type Unit = 'cm'
 
 type Fabric = {
   width: number
-  length: number
   unit: Unit
-  folded: boolean
 }
 
 let nextPieceId = 1
 
-const MIN_DISPLAY_WIDTH = 280
-const MAX_DISPLAY_WIDTH = 600
+const PX_PER_CM = 3
 
 function App() {
   const [fabric, setFabric] = createStore<Fabric>({
     width: 0,
-    length: 0,
     unit: 'cm',
-    folded: false,
   })
 
   const [pieces, setPieces] = createStore<Piece[]>([])
@@ -43,9 +38,10 @@ function App() {
   const [pieceWidth, setPieceWidth] = createSignal(0)
   const [pieceHeight, setPieceHeight] = createSignal(0)
   const [pieceQuantity, setPieceQuantity] = createSignal(1)
+  const [pieceCanRotate, setPieceCanRotate] = createSignal(true)
   const [pieceSubmitAttempted, setPieceSubmitAttempted] = createSignal(false)
 
-  const fabricReady = () => fabric.width > 0 && fabric.length > 0
+  const fabricReady = () => fabric.width > 0
   const pieceLabelError = () => pieceSubmitAttempted() && !pieceLabel().trim()
 
   const addPiece = () => {
@@ -58,6 +54,7 @@ function App() {
       width: pieceWidth(),
       height: pieceHeight(),
       quantity: pieceQuantity(),
+      canRotate: pieceCanRotate(),
     })
     const label = nextLabel() + 1
     setNextLabel(label)
@@ -65,6 +62,7 @@ function App() {
     setPieceWidth(0)
     setPieceHeight(0)
     setPieceQuantity(1)
+    setPieceCanRotate(true)
     setPieceSubmitAttempted(false)
   }
 
@@ -72,21 +70,15 @@ function App() {
     setPieces((prev) => prev.filter((p) => p.id !== id))
   }
 
+  const toggleCanRotate = (id: number, canRotate: boolean) => {
+    setPieces((p) => p.id === id, 'canRotate', canRotate)
+  }
+
+  const [showCalculation, setShowCalculation] = createSignal(false)
+
+  const calculation = () => calculateFabricNeeded(fabric.width, pieces)
+
   let canvasRef: HTMLCanvasElement | undefined
-  let canvasContainerRef: HTMLDivElement | undefined
-
-  const [displayWidth, setDisplayWidth] = createSignal(MAX_DISPLAY_WIDTH)
-
-  createEffect(() => {
-    const container = canvasContainerRef
-    if (!container) return
-
-    const observer = new ResizeObserver((entries) => {
-      const width = entries[0].contentRect.width
-      setDisplayWidth(Math.max(MIN_DISPLAY_WIDTH, Math.min(MAX_DISPLAY_WIDTH, width)))
-    })
-    observer.observe(container)
-  })
 
   createEffect(() => {
     const canvas = canvasRef
@@ -94,34 +86,36 @@ function App() {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    const width = displayWidth()
-    const usableWidth = fabric.folded ? fabric.width / 2 : fabric.width
-    const scale = usableWidth > 0 ? width / usableWidth : 0
-    const placed = usableWidth > 0 ? layoutPieces(usableWidth, pieces) : []
+    const placed = fabric.width > 0 ? layoutPieces(fabric.width, pieces) : []
 
-    const requiredHeight = placed.reduce((max, r) => Math.max(max, r.y + r.height), 0)
-    const displayHeight = Math.max(fabric.length, requiredHeight) * scale || 200
+    const requiredLength = placed.reduce((max, r) => Math.max(max, r.y + r.height), 0)
+    const width = fabric.width * PX_PER_CM || 200
+    const height = requiredLength * PX_PER_CM || 200
 
     canvas.width = width
-    canvas.height = displayHeight
+    canvas.height = height
 
     ctx.clearRect(0, 0, canvas.width, canvas.height)
 
     // fabric background
     ctx.fillStyle = '#f4f3ec'
-    ctx.fillRect(0, 0, width, fabric.length * scale)
+    ctx.fillRect(0, 0, width, requiredLength * PX_PER_CM)
     ctx.strokeStyle = '#c9c6bd'
-    ctx.strokeRect(0, 0, width, fabric.length * scale)
+    ctx.strokeRect(0, 0, width, requiredLength * PX_PER_CM)
 
-    // pieces
+    // pieces (width position/extent -> x, length position/extent -> y)
     for (const rect of placed) {
+      const drawX = rect.x * PX_PER_CM
+      const drawY = rect.y * PX_PER_CM
+      const drawWidth = rect.width * PX_PER_CM
+      const drawHeight = rect.height * PX_PER_CM
       ctx.fillStyle = 'rgba(170, 59, 255, 0.25)'
       ctx.strokeStyle = '#aa3bff'
-      ctx.fillRect(rect.x * scale, rect.y * scale, rect.width * scale, rect.height * scale)
-      ctx.strokeRect(rect.x * scale, rect.y * scale, rect.width * scale, rect.height * scale)
+      ctx.fillRect(drawX, drawY, drawWidth, drawHeight)
+      ctx.strokeRect(drawX, drawY, drawWidth, drawHeight)
       ctx.fillStyle = '#08060d'
       ctx.font = '12px system-ui'
-      ctx.fillText(rect.label, rect.x * scale + 4, rect.y * scale + 14)
+      ctx.fillText(rect.label, drawX + 4, drawY + 14)
     }
   })
 
@@ -131,32 +125,15 @@ function App() {
         <Typography variant="h5" gutterBottom>Sewing Partner</Typography>
 
         <Paper variant="outlined" sx={{ p: 2, mb: 3 }}>
-          <Typography variant="subtitle1" gutterBottom>Fabric</Typography>
           <Box sx={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 2 }}>
             <TextField
-              label={`Width (${fabric.unit})`}
+              label={`Fabric width (${fabric.unit})`}
               type="number"
               size="small"
+              inputProps={{ min: 0 }}
               value={fabric.width}
-              onChange={(_e, value) => setFabric('width', Number(value))}
-              sx={{ width: 120 }}
-            />
-            <TextField
-              label={`Length (${fabric.unit})`}
-              type="number"
-              size="small"
-              value={fabric.length}
-              onChange={(_e, value) => setFabric('length', Number(value))}
-              sx={{ width: 120 }}
-            />
-            <FormControlLabel
-              control={
-                <Checkbox
-                  checked={fabric.folded}
-                  onChange={(_e, checked) => setFabric('folded', checked)}
-                />
-              }
-              label="Folded"
+              onChange={(_e, value) => setFabric('width', Math.max(0, Number(value)))}
+              sx={{ width: 140 }}
             />
           </Box>
         </Paper>
@@ -166,7 +143,7 @@ function App() {
 
           {!fabricReady() && (
             <Alert severity="warning" sx={{ mb: 2 }}>
-              Set the fabric width and length before adding pieces.
+              Set the fabric width before adding pieces.
             </Alert>
           )}
 
@@ -185,8 +162,9 @@ function App() {
               label={`Width (${fabric.unit})`}
               type="number"
               size="small"
+              inputProps={{ min: 0 }}
               value={pieceWidth()}
-              onChange={(_e, value) => setPieceWidth(Number(value))}
+              onChange={(_e, value) => setPieceWidth(Math.max(0, Number(value)))}
               disabled={!fabricReady()}
               sx={{ width: 110 }}
             />
@@ -194,8 +172,9 @@ function App() {
               label={`Height (${fabric.unit})`}
               type="number"
               size="small"
+              inputProps={{ min: 0 }}
               value={pieceHeight()}
-              onChange={(_e, value) => setPieceHeight(Number(value))}
+              onChange={(_e, value) => setPieceHeight(Math.max(0, Number(value)))}
               disabled={!fabricReady()}
               sx={{ width: 110 }}
             />
@@ -205,9 +184,19 @@ function App() {
               size="small"
               inputProps={{ min: 1 }}
               value={pieceQuantity()}
-              onChange={(_e, value) => setPieceQuantity(Number(value))}
+              onChange={(_e, value) => setPieceQuantity(Math.max(1, Number(value)))}
               disabled={!fabricReady()}
               sx={{ width: 80 }}
+            />
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={pieceCanRotate()}
+                  onChange={(_e, checked) => setPieceCanRotate(checked)}
+                  disabled={!fabricReady()}
+                />
+              }
+              label="Can rotate"
             />
             <Button variant="contained" onClick={addPiece} disabled={!fabricReady()}>
               Add piece
@@ -231,19 +220,49 @@ function App() {
                   <Typography variant="body2">
                     {piece.label} — {piece.width}×{piece.height} ({fabric.unit}) × {piece.quantity}
                   </Typography>
-                  <IconButton size="small" color="error" onClick={() => removePiece(piece.id)} aria-label="Remove piece">
-                    ✕
-                  </IconButton>
+                  <Box sx={{ display: "flex", alignItems: "center" }}>
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          size="small"
+                          checked={piece.canRotate}
+                          onChange={(_e, checked) => toggleCanRotate(piece.id, checked)}
+                        />
+                      }
+                      label="Can rotate"
+                    />
+                    <IconButton size="small" color="error" onClick={() => removePiece(piece.id)} aria-label="Remove piece">
+                      ✕
+                    </IconButton>
+                  </Box>
                 </Paper>
               )}
             </For>
           </Stack>
+
+          <Divider sx={{ my: 2 }} />
+
+          <Button
+            variant="outlined"
+            onClick={() => setShowCalculation(true)}
+            disabled={!fabricReady() || pieces.length === 0}
+          >
+            Calculate
+          </Button>
+
+          {showCalculation() && (
+            <Alert severity="success" sx={{ mt: 2 }}>
+              <Typography variant="body1">
+                Fabric to buy: {Math.ceil(calculation().requiredLength)} {fabric.unit}
+              </Typography>
+            </Alert>
+          )}
         </Paper>
       </Grid>
 
-      <Grid item xs={12} md={8} ref={canvasContainerRef} sx={{ p: 3, overflowY: "auto", bgcolor: "grey.50", boxSizing: "border-box" }}>
+      <Grid item xs={12} md={8} sx={{ p: 3, overflow: "auto", bgcolor: "grey.50", boxSizing: "border-box" }}>
         <Typography variant="subtitle1" gutterBottom>Table</Typography>
-        <Box component="canvas" ref={canvasRef} sx={{ border: "1px solid", borderColor: "divider", bgcolor: "background.paper", maxWidth: "100%" }} />
+        <Box component="canvas" ref={canvasRef} sx={{ border: "1px solid", borderColor: "divider", bgcolor: "background.paper" }} />
       </Grid>
     </Grid>
   )

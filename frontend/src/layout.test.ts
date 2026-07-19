@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { layoutPieces, type Piece } from './layout'
+import { calculateFabricNeeded, layoutPieces, type Piece } from './layout'
 
 function piece(overrides: Partial<Piece>): Piece {
-  return { id: 1, label: 'p', width: 10, height: 10, quantity: 1, ...overrides }
+  const base = { id: 1, label: 'p', width: 10, height: 10, quantity: 1, canRotate: false }
+  return { ...base, ...overrides, canRotate: overrides.canRotate ?? base.canRotate }
 }
 
 describe('layoutPieces', () => {
@@ -28,8 +29,60 @@ describe('layoutPieces', () => {
       piece({ id: 2, label: 'b', width: 40, height: 20 }),
     ])
     expect(result).toEqual([
-      { x: 0, y: 0, width: 40, height: 10, label: 'a' },
-      { x: 0, y: 10, width: 40, height: 20, label: 'b' },
+      { x: 0, y: 0, width: 40, height: 20, label: 'b' },
+      { x: 0, y: 20, width: 40, height: 10, label: 'a' },
+    ])
+  })
+
+  it('sorts pieces tallest-first so shorter pieces can share a row instead of starting a new one', () => {
+    const result = layoutPieces(100, [
+      piece({ id: 1, label: 'short', width: 40, height: 10 }),
+      piece({ id: 2, label: 'tall', width: 40, height: 30 }),
+    ])
+    expect(result).toEqual([
+      { x: 0, y: 0, width: 40, height: 30, label: 'tall' },
+      { x: 40, y: 0, width: 40, height: 10, label: 'short' },
+    ])
+  })
+
+  it('reuses leftover width in an earlier row instead of always starting a new one', () => {
+    const result = layoutPieces(50, [
+      piece({ id: 1, label: 'A', width: 40, height: 30 }),
+      piece({ id: 2, label: 'B', width: 45, height: 20 }),
+      piece({ id: 3, label: 'C', width: 10, height: 5 }),
+    ])
+    // C doesn't fit row B's leftover width (45+10=55 > 50), but fits row A's
+    // leftover (40+10=50) — reusing it keeps the total length at 50 (30+20)
+    // instead of opening a third row and growing to 55 (30+20+5).
+    expect(result).toEqual([
+      { x: 0, y: 0, width: 40, height: 30, label: 'A' },
+      { x: 0, y: 30, width: 45, height: 20, label: 'B' },
+      { x: 40, y: 0, width: 10, height: 5, label: 'C' },
+    ])
+  })
+
+  it('rotates a piece that would not otherwise fit the usable width', () => {
+    const result = layoutPieces(50, [piece({ width: 60, height: 20, canRotate: true })])
+    expect(result).toEqual([{ x: 0, y: 0, width: 20, height: 60, label: 'p' }])
+  })
+
+  it('does not rotate a piece that is not flagged as rotatable, even if rotating would fit better', () => {
+    const result = layoutPieces(50, [piece({ width: 60, height: 20, canRotate: false })])
+    expect(result).toEqual([{ x: 0, y: 0, width: 60, height: 20, label: 'p' }])
+  })
+
+  it('rotates a piece to minimize the added shelf height when opening a new row', () => {
+    const result = layoutPieces(100, [
+      piece({ id: 1, label: 'A', width: 90, height: 30 }),
+      piece({ id: 2, label: 'C', width: 15, height: 25, canRotate: true }),
+      piece({ id: 3, label: 'B', width: 80, height: 20 }),
+    ])
+    // C (15x25) doesn't fit A's leftover width either way, so it opens a new
+    // row. Rotated (25x15) adds only 15 to the total length instead of 25.
+    expect(result).toEqual([
+      { x: 0, y: 0, width: 90, height: 30, label: 'A' },
+      { x: 0, y: 30, width: 25, height: 15, label: 'C' },
+      { x: 0, y: 45, width: 80, height: 20, label: 'B' },
     ])
   })
 
@@ -41,5 +94,28 @@ describe('layoutPieces', () => {
 
   it('returns an empty layout for no pieces', () => {
     expect(layoutPieces(100, [])).toEqual([])
+  })
+})
+
+describe('calculateFabricNeeded', () => {
+  it('reports zero waste when pieces exactly fill the fabric', () => {
+    const result = calculateFabricNeeded(100, [piece({ width: 100, height: 50 })])
+    expect(result.requiredLength).toBe(50)
+    expect(result.wastePercent).toBeCloseTo(0)
+  })
+
+  it('reports waste when pieces do not fill the required length', () => {
+    // Two 40x10 pieces side by side need 40 usable width, 10 length, but wrap at 60 -> one row
+    const result = calculateFabricNeeded(60, [
+      piece({ id: 1, width: 40, height: 10 }),
+      piece({ id: 2, width: 40, height: 20 }),
+    ])
+    // requiredLength = 30 (10 + 20), fabric area = 60*30 = 1800, piece area = 400+800=1200
+    expect(result.requiredLength).toBe(30)
+    expect(result.wastePercent).toBeCloseTo(((1800 - 1200) / 1800) * 100)
+  })
+
+  it('returns zero for no pieces', () => {
+    expect(calculateFabricNeeded(100, [])).toEqual({ requiredLength: 0, wastePercent: 0 })
   })
 })
