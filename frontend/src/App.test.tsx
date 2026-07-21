@@ -18,9 +18,15 @@ describe('App', () => {
     expect(screen.getByText(/Set the fabric width/i)).toBeInTheDocument()
   })
 
-  it('enables the piece form once the fabric width is set', () => {
+  it('enables the piece form once the fabric width, piece width, and piece height are set', () => {
     render(() => <App />)
     setFabricWidth()
+    expect(screen.getByRole('button', { name: /Add piece/i })).toBeDisabled()
+
+    fireEvent.input(screen.getByLabelText(/^Width \(cm\)/i), { target: { value: '30' } })
+    expect(screen.getByRole('button', { name: /Add piece/i })).toBeDisabled()
+
+    fireEvent.input(screen.getByLabelText(/^Height \(cm\)/i), { target: { value: '40' } })
     expect(screen.getByRole('button', { name: /Add piece/i })).toBeEnabled()
   })
 
@@ -28,6 +34,8 @@ describe('App', () => {
     render(() => <App />)
     setFabricWidth()
 
+    fireEvent.input(screen.getByLabelText(/^Width \(cm\)/i), { target: { value: '30' } })
+    fireEvent.input(screen.getByLabelText(/^Height \(cm\)/i), { target: { value: '40' } })
     fireEvent.input(screen.getByLabelText(/^Label/i), { target: { value: '' } })
     fireEvent.click(screen.getByRole('button', { name: /Add piece/i }))
 

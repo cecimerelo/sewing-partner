@@ -333,7 +333,7 @@ function App() {
               }
               label="Can rotate"
             />
-            <Button variant="contained" onClick={addPiece} disabled={!fabricReady()}>
+            <Button variant="contained" onClick={addPiece} disabled={!fabricReady() || pieceWidth() <= 0 || pieceHeight() <= 0}>
               Add piece
             </Button>
           </Box>
