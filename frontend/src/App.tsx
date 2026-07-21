@@ -200,80 +200,50 @@ function App() {
 
       const piece = pieces.find((p) => p.id === inst.pieceId)
       if (piece?.canRotate) {
-        // Rotate handle sits just outside the top-right corner and only
-        // shows on hover. Its local position stays fixed at that corner —
-        // the group's own rotation transform is what carries it visually
-        // around the piece, so we never move the handle in local space,
-        // only recompute the group's rotation to match its dragged angle.
-        const handleX = rectWidth + 5
-        const handleY = -5
-        const cornerAngleRad = Math.atan2(handleY - rectHeight / 2, handleX - rectWidth / 2)
+        // Rotate button sits at the piece's center and always shows —
+        // clicking it steps rotation by 90°. It's a child of the draggable
+        // group, so a plain click on it would otherwise also start a drag;
+        // cancelling the group's dragstart when it originates on the
+        // button keeps the click a click.
+        const handleCenterX = rectWidth / 2
+        const handleCenterY = rectHeight / 2
 
         const handle = new Konva.Circle({
-          x: handleX,
-          y: handleY,
-          radius: 7,
-          fill: '#ffffff',
+          x: handleCenterX,
+          y: handleCenterY,
+          radius: 11,
+          fill: 'rgba(255, 255, 255, 0.85)',
           stroke: '#aa3bff',
           strokeWidth: 1.5,
-          visible: false,
-          draggable: true,
         })
         // MUI's Refresh icon path (24x24 viewBox), scaled down and centered
-        // on the handle — matches @mui/icons-material/Refresh, which is a
+        // on the button — matches @mui/icons-material/Refresh, which is a
         // React component and can't be rendered onto a Konva canvas directly.
         const handleIcon = new Konva.Path({
-          x: handleX,
-          y: handleY,
+          x: handleCenterX,
+          y: handleCenterY,
           data: 'M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z',
           fill: '#aa3bff',
-          scale: { x: 0.5, y: 0.5 },
+          scale: { x: 0.65, y: 0.65 },
           offsetX: 12,
           offsetY: 12,
-          visible: false,
           listening: false,
         })
         group.add(handle)
         group.add(handleIcon)
 
-        let isRotating = false
-        const setHandleVisible = (visible: boolean) => {
-          handle.visible(visible)
-          handleIcon.visible(visible)
-          layer!.batchDraw()
-        }
-
-        group.on('mouseenter', () => {
-          setHandleVisible(true)
-          stage!.container().style.cursor = 'move'
-        })
-        group.on('mouseleave', () => {
-          if (!isRotating) setHandleVisible(false)
-          stage!.container().style.cursor = 'default'
+        group.on('dragstart', (e) => {
+          if (e.target === handle) group.stopDrag()
         })
         handle.on('mouseenter', () => {
-          stage!.container().style.cursor = 'grab'
+          stage!.container().style.cursor = 'pointer'
         })
-
-        handle.on('dragstart', () => {
-          isRotating = true
-        })
-        handle.on('dragmove', () => {
-          const center = { x: group.x(), y: group.y() }
-          const pointer = handle.getAbsolutePosition()
-          const angle = Math.atan2(pointer.y - center.y, pointer.x - center.x)
-          const rotationDeg = (((angle - cornerAngleRad) * 180) / Math.PI + 360) % 360
-          group.rotation(rotationDeg)
-          handle.position({ x: handleX, y: handleY })
-          handleIcon.position({ x: handleX, y: handleY })
-          layer!.batchDraw()
-        })
-        handle.on('dragend', () => {
-          isRotating = false
-          const rotationDeg = ((Math.round(group.rotation() / 90) * 90) % 360 + 360) % 360
-          group.rotation(rotationDeg)
-          setHandleVisible(false)
+        handle.on('mouseleave', () => {
           stage!.container().style.cursor = 'default'
+        })
+        handle.on('click tap', () => {
+          const rotationDeg = (group.rotation() + 90) % 360
+          group.rotation(rotationDeg)
           setInstances((i) => i.instanceId === inst.instanceId, 'rotationDeg', rotationDeg)
         })
       }
