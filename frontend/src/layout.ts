@@ -94,3 +94,66 @@ export function calculateFabricNeeded(usableWidth: number, pieces: Piece[]): Fab
 
   return { requiredLength, wastePercent }
 }
+
+// An Instance is one draggable/rotatable copy of a Piece on the table —
+// a piece with quantity 3 has 3 independent instances, each with its own
+// manually adjustable position (x/y are the piece's CENTER point) and
+// rotation, separate from the piece's width/height/quantity definition.
+export type Instance = {
+  instanceId: number
+  pieceId: number
+  label: string
+  width: number
+  height: number
+  x: number
+  y: number
+  rotationDeg: number
+}
+
+// Reconciles the instance list against the current pieces: keeps existing
+// instances (and any manual drag/rotate the user already applied) up to
+// each piece's quantity, adds new instances (seeded from the auto-packing
+// layout for a reasonable starting position) when quantity increases, and
+// drops instances for removed pieces or reduced quantities.
+export function reconcileInstances(
+  pieces: Piece[],
+  existing: Instance[],
+  fabricWidth: number,
+  startId: number,
+): { instances: Instance[]; nextId: number } {
+  const autoPlaced = fabricWidth > 0 ? layoutPieces(fabricWidth, pieces) : []
+  const byLabel = new Map<string, PlacedRect[]>()
+  for (const rect of autoPlaced) {
+    const list = byLabel.get(rect.label) ?? []
+    list.push(rect)
+    byLabel.set(rect.label, list)
+  }
+
+  let nextId = startId
+  const result: Instance[] = []
+
+  for (const piece of pieces) {
+    const existingForPiece = existing.filter((i) => i.pieceId === piece.id)
+    const keep = existingForPiece.slice(0, piece.quantity)
+    result.push(...keep)
+
+    const remaining = (byLabel.get(piece.label) ?? []).slice(keep.length)
+
+    for (let i = keep.length; i < piece.quantity; i++) {
+      const rect = remaining[i - keep.length]
+      const rotated = rect !== undefined && (rect.width !== piece.width || rect.height !== piece.height)
+      result.push({
+        instanceId: nextId++,
+        pieceId: piece.id,
+        label: piece.label,
+        width: piece.width,
+        height: piece.height,
+        x: rect ? rect.x + rect.width / 2 : 0,
+        y: rect ? rect.y + rect.height / 2 : 0,
+        rotationDeg: rotated ? 90 : 0,
+      })
+    }
+  }
+
+  return { instances: result, nextId }
+}

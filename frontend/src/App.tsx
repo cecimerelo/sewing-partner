@@ -1,5 +1,6 @@
-import { createSignal, createEffect, For } from 'solid-js'
+import { createSignal, createEffect, onMount, untrack, For } from 'solid-js'
 import { createStore } from 'solid-js/store'
+import Konva from 'konva'
 import Grid from '@suid/material/Grid'
 import Box from '@suid/material/Box'
 import Stack from '@suid/material/Stack'
@@ -12,7 +13,7 @@ import FormControlLabel from '@suid/material/FormControlLabel'
 import IconButton from '@suid/material/IconButton'
 import Divider from '@suid/material/Divider'
 import Alert from '@suid/material/Alert'
-import { calculateFabricNeeded, layoutPieces, type Piece } from './layout'
+import { calculateFabricNeeded, reconcileInstances, type Instance, type Piece } from './layout'
 
 type Unit = 'cm'
 
@@ -78,45 +79,164 @@ function App() {
 
   const calculation = () => calculateFabricNeeded(fabric.width, pieces)
 
-  let canvasRef: HTMLCanvasElement | undefined
+  // Instances are individually draggable/rotatable copies of each piece
+  // (one per unit of quantity). Reconciled from `pieces` whenever the
+  // piece definitions or fabric width change — but reading `instances`
+  // itself must stay untracked here, or every drag/rotate update (which
+  // writes to `instances`) would re-trigger this same reconciliation.
+  const [instances, setInstances] = createStore<Instance[]>([])
+  const [nextInstanceId, setNextInstanceId] = createSignal(1)
 
   createEffect(() => {
-    const canvas = canvasRef
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
+    const width = fabric.width
+    const currentPieces = pieces.map((p) => ({ ...p }))
+    const { instances: reconciled, nextId } = reconcileInstances(
+      currentPieces,
+      untrack(() => instances),
+      width,
+      untrack(() => nextInstanceId()),
+    )
+    setInstances(reconciled)
+    setNextInstanceId(nextId)
+  })
 
-    const placed = fabric.width > 0 ? layoutPieces(fabric.width, pieces) : []
+  let stageContainerRef: HTMLDivElement | undefined
+  let stage: Konva.Stage | undefined
+  let layer: Konva.Layer | undefined
+  let transformer: Konva.Transformer | undefined
+  const [selectedInstanceId, setSelectedInstanceId] = createSignal<number | null>(null)
 
-    const requiredLength = placed.reduce((max, r) => Math.max(max, r.y + r.height), 0)
+  onMount(() => {
+    if (!stageContainerRef) return
+    stage = new Konva.Stage({ container: stageContainerRef, width: 200, height: 200 })
+    layer = new Konva.Layer()
+    stage.add(layer)
+    transformer = new Konva.Transformer({
+      rotateEnabled: true,
+      resizeEnabled: false,
+      rotationSnaps: [0, 90, 180, 270],
+      enabledAnchors: [],
+    })
+    layer.add(transformer)
+    stage.on('click tap', (e) => {
+      if (e.target === stage) {
+        setSelectedInstanceId(null)
+        transformer?.nodes([])
+        layer?.batchDraw()
+      }
+    })
+  })
+
+  createEffect(() => {
+    if (!stage || !layer || !transformer) return
+
     const width = fabric.width * PX_PER_CM || 200
-    const height = requiredLength * PX_PER_CM || 200
+    const maxY = instances.reduce((max, i) => Math.max(max, i.y + i.height), 0)
+    const height = Math.max(400, maxY * PX_PER_CM + 100)
+    stage.width(width)
+    stage.height(height)
 
-    canvas.width = width
-    canvas.height = height
+    layer.find('.piece').forEach((node) => node.destroy())
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    let selectedNode: Konva.Group | undefined
 
-    // fabric background
-    ctx.fillStyle = '#f4f3ec'
-    ctx.fillRect(0, 0, width, requiredLength * PX_PER_CM)
-    ctx.strokeStyle = '#c9c6bd'
-    ctx.strokeRect(0, 0, width, requiredLength * PX_PER_CM)
+    // Rotations are locked to 0/90/180/270, so every piece stays axis-aligned —
+    // overlap checks can use simple AABB intersection instead of polygon math.
+    // Populated as groups are created below; dragBoundFunc closures read it
+    // lazily, so it's fully populated by the time any drag actually happens.
+    const groupInfos: { instanceId: number; group: Konva.Group; footprintWidth: number; footprintHeight: number }[] = []
 
-    // pieces (width position/extent -> x, length position/extent -> y)
-    for (const rect of placed) {
-      const drawX = rect.x * PX_PER_CM
-      const drawY = rect.y * PX_PER_CM
-      const drawWidth = rect.width * PX_PER_CM
-      const drawHeight = rect.height * PX_PER_CM
-      ctx.fillStyle = 'rgba(170, 59, 255, 0.25)'
-      ctx.strokeStyle = '#aa3bff'
-      ctx.fillRect(drawX, drawY, drawWidth, drawHeight)
-      ctx.strokeRect(drawX, drawY, drawWidth, drawHeight)
-      ctx.fillStyle = '#08060d'
-      ctx.font = '12px system-ui'
-      ctx.fillText(rect.label, drawX + 4, drawY + 14)
+    for (const inst of instances) {
+      const rectWidth = inst.width * PX_PER_CM
+      const rectHeight = inst.height * PX_PER_CM
+
+      const group = new Konva.Group({
+        x: inst.x * PX_PER_CM,
+        y: inst.y * PX_PER_CM,
+        rotation: inst.rotationDeg,
+        offsetX: rectWidth / 2,
+        offsetY: rectHeight / 2,
+        draggable: true,
+        name: 'piece',
+      })
+
+      // Rotation swaps which side faces which axis, so the drag bounds
+      // must use the footprint (post-rotation) dimensions, not the raw
+      // rect width/height, to keep the piece fully on the fabric.
+      const isSideways = Math.abs(inst.rotationDeg % 180) === 90
+      const footprintWidth = isSideways ? rectHeight : rectWidth
+      const footprintHeight = isSideways ? rectWidth : rectHeight
+      groupInfos.push({ instanceId: inst.instanceId, group, footprintWidth, footprintHeight })
+
+      let lastValidPos = { x: inst.x * PX_PER_CM, y: inst.y * PX_PER_CM }
+      group.dragBoundFunc((pos) => {
+        const stageWidth = stage!.width()
+        const stageHeight = stage!.height()
+        const minX = footprintWidth / 2
+        const maxX = Math.max(minX, stageWidth - footprintWidth / 2)
+        const minY = footprintHeight / 2
+        const maxY = Math.max(minY, stageHeight - footprintHeight / 2)
+        const x = Math.min(Math.max(pos.x, minX), maxX)
+        const y = Math.min(Math.max(pos.y, minY), maxY)
+
+        const left = x - footprintWidth / 2
+        const right = x + footprintWidth / 2
+        const top = y - footprintHeight / 2
+        const bottom = y + footprintHeight / 2
+
+        const overlapsAnother = groupInfos.some((other) => {
+          if (other.instanceId === inst.instanceId) return false
+          const otherLeft = other.group.x() - other.footprintWidth / 2
+          const otherRight = other.group.x() + other.footprintWidth / 2
+          const otherTop = other.group.y() - other.footprintHeight / 2
+          const otherBottom = other.group.y() + other.footprintHeight / 2
+          return left < otherRight && right > otherLeft && top < otherBottom && bottom > otherTop
+        })
+
+        if (overlapsAnother) return lastValidPos
+        lastValidPos = { x, y }
+        return lastValidPos
+      })
+
+      group.add(
+        new Konva.Rect({
+          width: rectWidth,
+          height: rectHeight,
+          fill: 'rgba(170, 59, 255, 0.25)',
+          stroke: '#aa3bff',
+          strokeWidth: 1,
+        }),
+      )
+      group.add(new Konva.Text({ text: inst.label, fontSize: 12, fill: '#08060d', padding: 4 }))
+
+      group.on('dragend', () => {
+        setInstances(
+          (i) => i.instanceId === inst.instanceId,
+          { x: group.x() / PX_PER_CM, y: group.y() / PX_PER_CM },
+        )
+      })
+
+      const piece = pieces.find((p) => p.id === inst.pieceId)
+      if (piece?.canRotate) {
+        group.on('click tap', () => {
+          setSelectedInstanceId(inst.instanceId)
+          transformer!.nodes([group])
+          layer!.batchDraw()
+        })
+      }
+
+      group.on('transformend', () => {
+        const rotationDeg = ((Math.round(group.rotation() / 90) * 90) % 360 + 360) % 360
+        setInstances((i) => i.instanceId === inst.instanceId, 'rotationDeg', rotationDeg)
+      })
+
+      layer.add(group)
+      if (inst.instanceId === selectedInstanceId()) selectedNode = group
     }
+
+    transformer.nodes(selectedNode ? [selectedNode] : [])
+    transformer.moveToTop()
+    layer.batchDraw()
   })
 
   return (
@@ -262,7 +382,7 @@ function App() {
 
       <Grid item xs={12} md={8} sx={{ p: 3, overflow: "auto", bgcolor: "grey.50", boxSizing: "border-box" }}>
         <Typography variant="subtitle1" gutterBottom>Table</Typography>
-        <Box component="canvas" ref={canvasRef} sx={{ border: "1px solid", borderColor: "divider", bgcolor: "background.paper" }} />
+        <Box ref={stageContainerRef} sx={{ display: "inline-block", border: "1px solid", borderColor: "divider", bgcolor: "background.paper" }} />
       </Grid>
     </Grid>
   )

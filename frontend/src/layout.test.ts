@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { calculateFabricNeeded, layoutPieces, type Piece } from './layout'
+import { calculateFabricNeeded, layoutPieces, reconcileInstances, type Instance, type Piece } from './layout'
 
 function piece(overrides: Partial<Piece>): Piece {
   const base = { id: 1, label: 'p', width: 10, height: 10, quantity: 1, canRotate: false }
@@ -117,5 +117,69 @@ describe('calculateFabricNeeded', () => {
 
   it('returns zero for no pieces', () => {
     expect(calculateFabricNeeded(100, [])).toEqual({ requiredLength: 0, wastePercent: 0 })
+  })
+})
+
+describe('reconcileInstances', () => {
+  it('creates one instance per unit of quantity, seeded from the auto layout', () => {
+    const { instances, nextId } = reconcileInstances(
+      [piece({ id: 1, label: 'a', width: 10, height: 20, quantity: 2 })],
+      [],
+      100,
+      1,
+    )
+    expect(instances).toHaveLength(2)
+    expect(instances.every((i) => i.pieceId === 1 && i.width === 10 && i.height === 20)).toBe(true)
+    expect(nextId).toBe(3)
+  })
+
+  it('preserves an existing instance (including manual position/rotation) when quantity is unchanged', () => {
+    const existing: Instance[] = [
+      { instanceId: 5, pieceId: 1, label: 'a', width: 10, height: 20, x: 999, y: 888, rotationDeg: 45 },
+    ]
+    const { instances } = reconcileInstances(
+      [piece({ id: 1, label: 'a', width: 10, height: 20, quantity: 1 })],
+      existing,
+      100,
+      10,
+    )
+    expect(instances).toEqual(existing)
+  })
+
+  it('adds a new instance when quantity increases, keeping the existing one untouched', () => {
+    const existing: Instance[] = [
+      { instanceId: 5, pieceId: 1, label: 'a', width: 10, height: 20, x: 999, y: 888, rotationDeg: 45 },
+    ]
+    const { instances } = reconcileInstances(
+      [piece({ id: 1, label: 'a', width: 10, height: 20, quantity: 2 })],
+      existing,
+      100,
+      10,
+    )
+    expect(instances).toHaveLength(2)
+    expect(instances[0]).toEqual(existing[0])
+    expect(instances[1].instanceId).toBe(10)
+  })
+
+  it('drops excess instances when quantity decreases', () => {
+    const existing: Instance[] = [
+      { instanceId: 1, pieceId: 1, label: 'a', width: 10, height: 20, x: 0, y: 0, rotationDeg: 0 },
+      { instanceId: 2, pieceId: 1, label: 'a', width: 10, height: 20, x: 5, y: 5, rotationDeg: 0 },
+    ]
+    const { instances } = reconcileInstances(
+      [piece({ id: 1, label: 'a', width: 10, height: 20, quantity: 1 })],
+      existing,
+      100,
+      10,
+    )
+    expect(instances).toEqual([existing[0]])
+  })
+
+  it('drops all instances for a piece that no longer exists', () => {
+    const existing: Instance[] = [
+      { instanceId: 1, pieceId: 99, label: 'gone', width: 10, height: 20, x: 0, y: 0, rotationDeg: 0 },
+    ]
+    const { instances } = reconcileInstances([], existing, 100, 10)
+    expect(instances).toEqual([])
   })
 })
